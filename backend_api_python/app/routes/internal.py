@@ -165,10 +165,13 @@ def polymarket_crypto_signals():
         else:
             overall = 'neutral'
 
+        # V3.7.2 FIX: 添加server_time用于新鲜度检查（解决timestamp without tz时区偏差）
+        from datetime import datetime as _dt
         return jsonify({
             'code': 0,
             'data': {
                 'timestamp': signals[0]['updated_at'] if signals else None,
+                'server_time': _dt.now().isoformat(),
                 'total_analyzed': len(signals),
                 'overall_signal': overall,
                 'signals': signals[:limit],
