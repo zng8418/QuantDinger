@@ -3,6 +3,7 @@ Polymarket批量分析器
 一次性分析多个市场，由AI筛选出有交易机会的市场
 """
 import json
+import re
 from typing import List, Dict, Optional
 from app.utils.logger import get_logger
 from app.utils.db import get_db_connection
@@ -19,6 +20,56 @@ class PolymarketBatchAnalyzer:
         self.llm_service = LLMService()
         self.polymarket_source = PolymarketDataSource()
     
+    @staticmethod
+    def _extract_json_from_text(text: str) -> Optional[dict]:
+        """
+        从LLM返回的文本中提取JSON对象。
+        按优先级尝试：
+          1. 直接解析整个字符串
+          2. 去除 markdown 代码围栏 (```json ... ```)
+          3. 用正则匹配第一个完整的 {...}
+        """
+        if not text:
+            return None
+
+        # 1) 直接解析
+        try:
+            return json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # 2) 去除 markdown 围栏
+        cleaned = text.strip()
+        # Match ```json ... ``` or ``` ... ```
+        fence_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?\s*```', cleaned, re.DOTALL)
+        if fence_match:
+            try:
+                return json.loads(fence_match.group(1).strip())
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        # 3) 正则提取第一个完整的 JSON 对象 {...}
+        #    使用非贪婪匹配，找到最外层的 { ... }
+        brace_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', cleaned, re.DOTALL)
+        if brace_match:
+            candidate = brace_match.group(0)
+            try:
+                return json.loads(candidate)
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        # 4) Broader attempt: find first { and last } and try parse
+        start = cleaned.find('{')
+        end = cleaned.rfind('}')
+        if start != -1 and end > start:
+            candidate = cleaned[start:end + 1]
+            try:
+                return json.loads(candidate)
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        return None
+
     def batch_analyze_markets(self, markets: List[Dict], max_opportunities: int = 20) -> List[Dict]:
         """
         批量分析市场，由AI筛选出有交易机会的市场
@@ -37,43 +88,52 @@ class PolymarketBatchAnalyzer:
             # 1. 构建批量分析的prompt
             markets_summary = self._build_markets_summary(markets)
             
-            prompt = f"""你是一个专业的预测市场分析师。请分析以下预测市场列表，筛选出最有交易机会的市场。
+            prompt = f"""Analyze the following prediction markets and identify the best trading opportunities.
 
-市场列表：
+Market List:
 {markets_summary}
 
-请基于以下维度评估每个市场：
-1. **市场活跃度**：交易量、流动性是否足够
-2. **概率偏差**：当前市场概率是否偏离合理预期（偏离50%越多，机会越大）
-3. **事件重要性**：事件对市场的影响程度
-4. **时间窗口**：距离结算时间是否合适（太近或太远都不好）
-5. **信息优势**：是否有明显的信息不对称或市场误判
+Evaluate each market based on:
+1. Market Activity: Is trading volume and liquidity sufficient?
+2. Probability Deviation: Does current market probability deviate from reasonable expectations? (Further from 50% = more opportunity)
+3. Event Importance: How significant is the event's market impact?
+4. Time Window: Is the settlement timeframe appropriate? (Too close or too far is bad)
+5. Information Edge: Is there obvious information asymmetry or market mispricing?
 
-请返回JSON格式，包含筛选出的市场ID和简要分析：
+IMPORTANT: You MUST respond with ONLY a valid JSON object, no additional text, no explanation, no markdown formatting.
+Return ONLY the JSON below:
+
 {{
     "opportunities": [
         {{
-            "market_id": "市场ID",
-            "opportunity_score": 85,  // 机会评分 0-100
-            "reason": "为什么这个市场有交易机会（简要说明）",
-            "recommendation": "YES/NO/HOLD",  // 推荐方向
-            "confidence": 75,  // 置信度 0-100
-            "key_factors": ["因素1", "因素2"]  // 关键因素
+            "market_id": "<the market ID from the list>",
+            "opportunity_score": 85,
+            "reason": "Brief reason why this market has a trading opportunity",
+            "recommendation": "YES",
+            "confidence": 75,
+            "key_factors": ["factor1", "factor2"],
+            "predicted_probability": 65.0
         }}
     ]
 }}
 
-要求：
-- 只返回最有价值的 {max_opportunities} 个机会
-- 机会评分 >= 60 才考虑
-- 优先选择：高交易量 + 明显概率偏差 + 高置信度
-- 简要说明原因，不要冗长"""
+Rules:
+- Return at most {max_opportunities} opportunities
+- Only include opportunities with score >= 60
+- Prioritize: high volume + clear probability deviation + high confidence
+- Keep reasons concise
+- predicted_probability: YOUR estimated true probability (0.0-100.0), which may differ from market probability
+- recommendation must be YES, NO, or HOLD"""
             
             # 2. 调用LLM进行批量分析
             messages = [
                 {
                     "role": "system",
-                    "content": "你是一个专业的预测市场分析师，擅长从大量市场中快速识别有价值的交易机会。请客观、理性地分析，只推荐真正有优势的机会。"
+                    "content": (
+                        "You are a professional prediction market analyst. "
+                        "You MUST respond with ONLY valid JSON. No explanatory text, no markdown, no comments inside JSON. "
+                        "Output raw JSON only."
+                    )
                 },
                 {
                     "role": "user",
@@ -82,19 +142,25 @@ class PolymarketBatchAnalyzer:
             ]
             
             logger.info(f"Batch analyzing {len(markets)} markets, requesting {max_opportunities} opportunities")
-            result = self.llm_service.call_llm_api(
+            result_text = self.llm_service.call_llm_api(
                 messages=messages,
                 use_json_mode=True,
                 temperature=0.3
             )
             
-            # 3. 解析结果
-            if isinstance(result, str):
-                try:
-                    result = json.loads(result)
-                except:
-                    logger.error(f"Failed to parse LLM result as JSON: {result[:200]}")
-                    return self._fallback_analysis(markets, max_opportunities)
+            # 3. 解析结果 — 使用健壮的 JSON 提取
+            result = None
+            if isinstance(result_text, dict):
+                result = result_text
+            elif isinstance(result_text, str):
+                result = self._extract_json_from_text(result_text)
+            
+            if result is None:
+                logger.error(
+                    f"Failed to extract JSON from LLM response. "
+                    f"Raw text (first 500 chars): {str(result_text)[:500]}"
+                )
+                return self._fallback_analysis(markets, max_opportunities)
             
             opportunities = result.get('opportunities', [])
             if not opportunities:
@@ -143,15 +209,15 @@ class PolymarketBatchAnalyzer:
             # Provide more helpful error messages for common API errors
             if "403" in error_msg or "Forbidden" in error_msg:
                 logger.error(
-                    f"Batch analysis failed: OpenRouter API 403 Forbidden. "
-                    f"请检查：1) OPENROUTER_API_KEY 是否正确配置 2) API 密钥是否有效 3) 账户余额是否充足。"
-                    f"错误详情: {error_msg}"
+                    f"Batch analysis failed: LLM API 403 Forbidden. "
+                    f"Please check: 1) API key is correctly configured 2) API key is valid 3) Account balance is sufficient. "
+                    f"Detail: {error_msg}"
                 )
             elif "401" in error_msg or "Unauthorized" in error_msg:
                 logger.error(
-                    f"Batch analysis failed: OpenRouter API 401 Unauthorized. "
-                    f"OPENROUTER_API_KEY 无效或已过期。请检查 backend_api_python/.env 中的配置。"
-                    f"错误详情: {error_msg}"
+                    f"Batch analysis failed: LLM API 401 Unauthorized. "
+                    f"API key is invalid or expired. Check backend_api_python/.env configuration. "
+                    f"Detail: {error_msg}"
                 )
             else:
                 logger.error(f"Batch analysis failed: {error_msg}", exc_info=True)

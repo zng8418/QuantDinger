@@ -871,8 +871,41 @@ class PolymarketDataSource:
         """从问题中推断类别"""
         question_lower = question.lower()
         
-        # 加密货币关键词
-        crypto_keywords = ['btc', 'bitcoin', 'eth', 'ethereum', 'sol', 'solana', 'crypto', 'token', 'coin', 'defi', 'nft']
+        # 加密货币关键词（扩展版：与 polymarket_worker.py 的 CRYPTO_KEYWORDS 保持一致）
+        crypto_keywords = [
+            # 主流币
+            'btc', 'bitcoin', 'eth', 'ethereum', 'sol', 'solana',
+            'bnb', 'binance', 'xrp', 'ripple', 'ada', 'cardano',
+            'doge', 'dogecoin', 'dot', 'polkadot', 'avax', 'avalanche',
+            'matic', 'polygon', 'link', 'chainlink', 'ltc', 'litecoin',
+            'uni', 'uniswap', 'pepe',
+            # 平台 / 机构
+            'coinbase', 'kraken', 'bybit', 'okx', 'bitget',
+            'usdt', 'tether', 'usdc',
+            # 监管（注意用 in 判断可能误匹配，但加密场景足够）
+            'bitcoin etf', 'eth etf', 'spot etf', 'crypto etf',
+            # 概念 / 垂类
+            'crypto', 'cryptocurrency', 'cryptocurrencies',
+            'memecoin', 'meme coin', 'meme token',
+            'defi', 'decentralized finance', 'nft', 'nfts',
+            'airdrop', 'airdrops', 'staking',
+            'blockchain', 'web3',
+            'ico', 'ieo', 'ido',
+            'layer 1', 'layer1', 'layer 2', 'layer2',
+            'dapp', 'smart contract',
+            'gas fee', 'hash rate', 'hashrate', 'mining',
+            # DeFi 协议
+            'aave', 'makerdao', 'lido', 'sushiswap', 'pancakeswap',
+            'megaeth',
+            # NFT / GameFi
+            'opensea', 'gamefi',
+            # 稳定币
+            'stablecoin',
+            # 关键人物
+            'satoshi', 'vitalik',
+            # 项目
+            'arbitrum', 'zkSync', 'starknet', 'toncoin',
+        ]
         if any(kw in question_lower for kw in crypto_keywords):
             return "crypto"
         
