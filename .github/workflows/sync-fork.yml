@@ -6,6 +6,9 @@ on:
     - cron: '0 */6 * * *'
   workflow_dispatch:  # 支持手动触发
 
+permissions:
+  contents: write
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -13,7 +16,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
       - name: Sync upstream changes
@@ -21,19 +23,15 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
 
-          # 添加上游仓库
           git remote add upstream https://github.com/brokermr810/QuantDinger.git
           git fetch upstream
 
-          # 切换到 main 并合并上游
           git checkout main
           git merge upstream/main --no-edit
 
-          # 推送到自己的 fork
           git push origin main
 
-      - name: Check for conflicts
+      - name: Conflict warning
         if: failure()
         run: |
           echo "::warning::Sync failed - likely merge conflicts. Manual resolution needed."
-          echo "Run locally: git fetch upstream && git merge upstream/main"
